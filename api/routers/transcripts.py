@@ -7,10 +7,13 @@ from api.schemas import (
     TranscriptUploadRequest, TranscriptUploadResponse,
     JobStatusResponse, TranscriptAssetsResponse, AssetResponse
 )
+from api.auth import get_current_user
+from fastapi import Depends
 from supabase import create_client
 from dotenv import load_dotenv
 from celery import chord
 from workers.tasks import generate_asset_task, on_chord_complete
+from pipeline.credits import get_balance, deduct_credits, COST_PER_RUN
 
 load_dotenv()
 
@@ -24,8 +27,13 @@ router = APIRouter(prefix="/api/v1", tags=["transcripts"])
 @router.post("/transcripts", response_model=TranscriptUploadResponse)
 async def upload_transcript(
     request: TranscriptUploadRequest,
+    current_user: dict = Depends(get_current_user)
 ):
-    user_id = "00000000-0000-0000-0000-000000000001"
+    user_id = current_user["sub"]
+    balance = get_balance(user_id)
+    if balance < COST_PER_RUN:
+        raise HTTPException(status_code=402, detail="Insufficient credits")
+    
 
     
     # Step 1: store transcript in Supabase
@@ -59,6 +67,8 @@ async def upload_transcript(
         on_chord_complete.s(transcript_id)
     ).apply_async()
     
+    deduct_credits(user_id, COST_PER_RUN, f"Repurposing run for transcript {transcript_id}")
+    
     
     return TranscriptUploadResponse(
         transcript_id=transcript_id,
@@ -90,6 +100,7 @@ async def get_assets(
 @router.get("/transcripts/{transcript_id}/status", response_model=JobStatusResponse)
 async def get_status(
     transcript_id: str,
+    current_user: dict = Depends(get_current_user)
 ):
     result = supabase.table("assets") \
         .select("*") \

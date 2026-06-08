@@ -1,1 +1,2 @@
 # Add Python dependencies here
+python-jose[cryptography]
